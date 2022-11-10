@@ -8,7 +8,7 @@ export default {
             license: MIT
             http://www.jacklmoore.com/wheelzoom
         */
-        wheelzoom = (function () {
+        let wheelzoom = (function () {
             var defaults = {
                 zoom: 0.10,
                 maxZoom: false,
@@ -212,7 +212,6 @@ export default {
 
         hashChange = async (e) => {
             await sleep(500);
-            console.info("waited");
             wheelzoom(document.querySelectorAll('img'));
         };
         window.addEventListener('hashchange', hashChange);
