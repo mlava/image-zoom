@@ -29,7 +29,7 @@ This extension is based on **Wheelzoom** (MIT licensed), with significant Roam-s
 - **Drag when zoomed** *(modifier required if enabled)*
 
 ### Reset
-- **Modifier-click** → resets zoom *(when modifier requirement is enabled)*  
+- **Modifier-double-click** → resets zoom *(when modifier requirement is enabled)*  
 - **Double-click** → resets zoom *(when modifier requirement is disabled)*
 
 These gestures are designed to avoid triggering Roam’s image popover or editor behaviors, including after drag or reset interactions.
