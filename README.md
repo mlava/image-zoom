@@ -10,6 +10,7 @@ This extension is based on **Wheelzoom** (MIT licensed), with significant Roam-s
 
 - 🖱 **Scroll-wheel zoom** on images  
 - ✋ **Click-and-drag panning** when zoomed
+- 🔍 **Zoom-in/zoom-out cursor** hints on hover
 - ⌨️ **Optional modifier key requirement** (prevents scroll hijacking)
 - 🔁 **Quick reset gesture**
 - 🧠 **Automatically ignores Roam UI icons and chrome**
@@ -25,13 +26,13 @@ This extension is based on **Wheelzoom** (MIT licensed), with significant Roam-s
 - **Scroll wheel only** (if modifier requirement is disabled)
 
 ### Pan
-- **Modifier key + drag** (when zoomed)
+- **Drag when zoomed** *(modifier required if enabled)*
 
 ### Reset
 - **Modifier-click** → resets zoom *(when modifier requirement is enabled)*  
 - **Double-click** → resets zoom *(when modifier requirement is disabled)*
 
-These gestures are designed to avoid triggering Roam’s image popover or editor behaviors.
+These gestures are designed to avoid triggering Roam’s image popover or editor behaviors, including after drag or reset interactions.
 
 ---
 
@@ -64,6 +65,7 @@ Which key must be held when the modifier requirement is enabled.
 
 - Options: `Alt`, `Ctrl`, `Shift`, `Meta`
 - Default: `Alt`
+- On macOS, Ctrl+click is right‑click; prefer Alt/Shift/Meta.
 
 ### Min image width / height
 Skips very small images (icons, UI glyphs).

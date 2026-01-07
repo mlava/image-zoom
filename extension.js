@@ -1,13 +1,12 @@
 let hashChange = undefined;
 let observer = null;
-
-// Track which images we've processed (WeakSet avoids retaining DOM nodes)
 let processedImgs = new WeakSet();
-
-// Strong set for teardown/rebuild so we only destroy OUR images
 let processedImgsStrong = new Set();
 
 let scheduledScan = null;
+
+const settingsOverrides = new Map();
+let liveModifierSettings = null;
 
 // -------------------- SETTINGS --------------------
 
@@ -43,14 +42,84 @@ function normalizeNumber(v, fallback) {
     return Number.isFinite(n) ? n : fallback;
 }
 
+function getSetting(extensionAPI, key) {
+    if (settingsOverrides.has(key)) return settingsOverrides.get(key);
+    return extensionAPI?.settings?.get?.(key);
+}
+
+function normalizeModifierKey(value, fallback = DEFAULT_MODIFIER_KEY) {
+    let raw = value?.value ?? value?.label ?? value;
+    if (raw === null || raw === undefined) return fallback;
+    if (typeof raw === "object") {
+        raw = raw.value ?? raw.label ?? raw.name ?? raw.key;
+    }
+    if (raw === null || raw === undefined) return fallback;
+    const key = String(raw).trim().toLowerCase();
+    if (key === "alt") return "Alt";
+    if (key === "ctrl" || key === "control") return "Ctrl";
+    if (key === "shift") return "Shift";
+    if (key === "meta" || key === "cmd" || key === "command") return "Meta";
+    return fallback;
+}
+
+function markInternalSrcChange(img) {
+    try {
+        if (!img?.dataset) return;
+        img.dataset.wheelzoomInternalSrc = "1";
+    } catch {
+        // ignore
+    }
+}
+
+function wasInternalSrcChange(img) {
+    try {
+        if (!img?.dataset?.wheelzoomInternalSrc) return false;
+        delete img.dataset.wheelzoomInternalSrc;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function getLiveModifierSettings(settings) {
+    if (!liveModifierSettings) return settings;
+    return {
+        requireModifier:
+            liveModifierSettings.requireModifier ?? settings.requireModifier,
+        modifierKey: liveModifierSettings.modifierKey ?? settings.modifierKey,
+    };
+}
+
+function setLiveModifierSettings(next) {
+    liveModifierSettings = {
+        requireModifier: next.requireModifier ?? liveModifierSettings?.requireModifier,
+        modifierKey: next.modifierKey ?? liveModifierSettings?.modifierKey,
+    };
+}
+
+function ensureSettingDefault(extensionAPI, key, defaultValue) {
+    const current = getSetting(extensionAPI, key);
+    if (current === undefined || current === null) {
+        extensionAPI?.settings?.set?.(key, defaultValue);
+    }
+}
+
+function setSetting(extensionAPI, key, value, after) {
+    settingsOverrides.set(key, value);
+    const result = extensionAPI?.settings?.set?.(key, value);
+    Promise.resolve(result).then(() => {
+        if (after) after();
+    });
+}
+
 function getSettings(extensionAPI) {
     const zoomStep = normalizeNumber(
-        extensionAPI?.settings?.get?.(SETTING_ZOOM_STEP),
+        getSetting(extensionAPI, SETTING_ZOOM_STEP),
         DEFAULT_ZOOM_STEP
     );
 
     const maxZoomRaw = normalizeNumber(
-        extensionAPI?.settings?.get?.(SETTING_MAX_ZOOM),
+        getSetting(extensionAPI, SETTING_MAX_ZOOM),
         DEFAULT_MAX_ZOOM
     );
     // Values <= 1 effectively disable zooming (you can never exceed the base size),
@@ -58,17 +127,16 @@ function getSettings(extensionAPI) {
     const maxZoom = maxZoomRaw > 1 ? maxZoomRaw : false;
 
     const requireModifier = normalizeBoolean(
-        extensionAPI?.settings?.get?.(SETTING_REQUIRE_MODIFIER),
+        getSetting(extensionAPI, SETTING_REQUIRE_MODIFIER),
         DEFAULT_REQUIRE_MODIFIER
     );
 
-    let modifierKey =
-        (extensionAPI?.settings?.get?.(SETTING_MODIFIER_KEY) || DEFAULT_MODIFIER_KEY) + "";
+    const modifierKey = normalizeModifierKey(getSetting(extensionAPI, SETTING_MODIFIER_KEY, DEFAULT_MODIFIER_KEY));
 
     const minW = Math.max(
         0,
         normalizeNumber(
-            extensionAPI?.settings?.get?.(SETTING_MIN_IMAGE_WIDTH),
+            getSetting(extensionAPI, SETTING_MIN_IMAGE_WIDTH),
             DEFAULT_MIN_IMAGE_WIDTH
         )
     );
@@ -76,7 +144,7 @@ function getSettings(extensionAPI) {
     const minH = Math.max(
         0,
         normalizeNumber(
-            extensionAPI?.settings?.get?.(SETTING_MIN_IMAGE_HEIGHT),
+            getSetting(extensionAPI, SETTING_MIN_IMAGE_HEIGHT),
             DEFAULT_MIN_IMAGE_HEIGHT
         )
     );
@@ -172,6 +240,9 @@ async function sleep(ms) {
 
 export default {
     onload: ({ extensionAPI }) => {
+        ensureSettingDefault(extensionAPI, SETTING_REQUIRE_MODIFIER, DEFAULT_REQUIRE_MODIFIER);
+        ensureSettingDefault(extensionAPI, SETTING_MODIFIER_KEY, DEFAULT_MODIFIER_KEY);
+
         extensionAPI?.settings?.panel?.create?.({
             tabTitle: "Image Zoom",
             settings: [
@@ -232,12 +303,20 @@ export default {
                     action: {
                         type: "switch",
                         onChange: (value) => {
-                            const next = value?.target?.checked ?? value?.checked ?? value;
-                            extensionAPI?.settings?.set?.(
+                            const next =
+                                value?.target?.checked ??
+                                value?.checked ??
+                                value?.value ??
+                                value;
+                            setLiveModifierSettings({
+                                requireModifier: normalizeBoolean(next, DEFAULT_REQUIRE_MODIFIER),
+                            });
+                            setSetting(
+                                extensionAPI,
                                 SETTING_REQUIRE_MODIFIER,
-                                normalizeBoolean(next, DEFAULT_REQUIRE_MODIFIER)
+                                normalizeBoolean(next, DEFAULT_REQUIRE_MODIFIER),
+                                scheduleRebuild
                             );
-                            scheduleRebuild();
                         },
                     },
                 },
@@ -249,9 +328,10 @@ export default {
                         type: "select",
                         items: ["Alt", "Ctrl", "Shift", "Meta"],
                         onChange: (value) => {
-                            const next = value?.target?.value ?? value;
-                            extensionAPI?.settings?.set?.(SETTING_MODIFIER_KEY, next);
-                            scheduleRebuild();
+                            const raw = value?.target?.value ?? value;
+                            const next = normalizeModifierKey(raw, DEFAULT_MODIFIER_KEY);
+                            setLiveModifierSettings({ modifierKey: next });
+                            setSetting(extensionAPI, SETTING_MODIFIER_KEY, next, scheduleRebuild);
                         },
                     },
                 },
@@ -335,6 +415,16 @@ export default {
                     // ignore dataset issues
                 }
 
+                // ---- Extension tweak: show zoom cursor on eligible images ----
+                try {
+                    if (!img.dataset.wheelzoomOriginalCursor) {
+                        img.dataset.wheelzoomOriginalCursor = img.style.cursor || "";
+                        img.style.cursor = "zoom-in";
+                    }
+                } catch {
+                    // ignore dataset issues
+                }
+
                 var settings = {};
                 var width;
                 var height;
@@ -346,6 +436,16 @@ export default {
                 var transparentSpaceFiller;
                 var suppressNextClick = false;
                 var suppressUntil = 0;
+                var suppressDocTimer = null;
+
+                function updateCursor() {
+                    try {
+                        const isZoomed = bgWidth > width || bgHeight > height;
+                        img.style.cursor = isZoomed ? "zoom-out" : "zoom-in";
+                    } catch {
+                        // ignore cursor issues
+                    }
+                }
 
                 function setSrcToBackground(img) {
                     img.style.backgroundRepeat = "no-repeat";
@@ -359,6 +459,7 @@ export default {
                             img.naturalHeight +
                             '"></svg>'
                         );
+                    markInternalSrcChange(img);
                     img.src = transparentSpaceFiller;
                 }
 
@@ -377,6 +478,7 @@ export default {
 
                     img.style.backgroundSize = bgWidth + "px " + bgHeight + "px";
                     img.style.backgroundPosition = bgPosX + "px " + bgPosY + "px";
+                    updateCursor();
                 }
 
                 function reset() {
@@ -402,6 +504,67 @@ export default {
                     suppressNextClick = false;
                 }
 
+                function swallowMouseUpCapture(e) {
+                    // Roam can open image popovers on mouseup; suppress after modifier drag.
+                    if (!suppressNextClick) return;
+                    if (Date.now() > suppressUntil) {
+                        suppressNextClick = false;
+                        return;
+                    }
+
+                    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                    e.stopPropagation();
+                    e.preventDefault();
+                }
+
+                function swallowPointerUpCapture(e) {
+                    // Some browsers fire pointerup before mouseup/click.
+                    if (!suppressNextClick) return;
+                    if (Date.now() > suppressUntil) {
+                        suppressNextClick = false;
+                        return;
+                    }
+
+                    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                    e.stopPropagation();
+                    e.preventDefault();
+                }
+
+                function setSuppressionWindow(durationMs = 700) {
+                    suppressNextClick = true;
+                    if (durationMs === null) {
+                        suppressUntil = Number.POSITIVE_INFINITY;
+                    } else {
+                        suppressUntil = Date.now() + durationMs;
+                    }
+
+                    try {
+                        document.addEventListener("mouseup", swallowMouseUpCapture, true);
+                        document.addEventListener("click", swallowClickCapture, true);
+                        document.addEventListener("pointerup", swallowPointerUpCapture, true);
+                    } catch {
+                        // ignore
+                    }
+
+                    if (suppressDocTimer) {
+                        window.clearTimeout(suppressDocTimer);
+                        suppressDocTimer = null;
+                    }
+
+                    if (durationMs !== null) {
+                        suppressDocTimer = window.setTimeout(() => {
+                            suppressDocTimer = null;
+                            try {
+                                document.removeEventListener("mouseup", swallowMouseUpCapture, true);
+                                document.removeEventListener("click", swallowClickCapture, true);
+                                document.removeEventListener("pointerup", swallowPointerUpCapture, true);
+                            } catch {
+                                // ignore
+                            }
+                        }, durationMs);
+                    }
+                }
+
                 function onDblClickCapture(e) {
                     if (!(bgWidth > width || bgHeight > height)) return;
 
@@ -411,13 +574,16 @@ export default {
                     e.stopPropagation();
                     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
 
-                    suppressNextClick = true;
-                    suppressUntil = Date.now() + 600;
+                    setSuppressionWindow(600);
                 }
 
                 function onwheel(e) {
                     // Modifier-key gating to prevent scroll hijacking
-                    if (settings.requireModifier && !modifierPressed(e, settings.modifierKey)) {
+                    const activeModifierSettings = getLiveModifierSettings(settings);
+                    if (
+                        activeModifierSettings.requireModifier &&
+                        !modifierPressed(e, activeModifierSettings.modifierKey)
+                    ) {
                         return;
                     }
 
@@ -467,6 +633,19 @@ export default {
                 }
 
                 function drag(e) {
+                    const activeModifierSettings = getLiveModifierSettings(settings);
+                    if (
+                        activeModifierSettings.requireModifier &&
+                        !modifierPressed(e, activeModifierSettings.modifierKey)
+                    ) {
+                        removeDrag();
+                        return;
+                    }
+                    if (e.buttons !== undefined && e.buttons === 0) {
+                        removeDrag();
+                        return;
+                    }
+
                     e.preventDefault();
                     e.stopPropagation();
                     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
@@ -480,18 +659,26 @@ export default {
                 function removeDrag() {
                     document.removeEventListener("mouseup", removeDrag);
                     document.removeEventListener("mousemove", drag);
+                    document.removeEventListener("pointerup", removeDrag);
+                    document.removeEventListener("touchend", removeDrag);
+                    document.removeEventListener("pointercancel", removeDrag);
+                    window.removeEventListener("blur", removeDrag);
+                    // Allow the trailing click to be suppressed, then release.
+                    setSuppressionWindow(250);
                 }
 
                 function draggable(e) {
+                    const activeModifierSettings = getLiveModifierSettings(settings);
                     const isModifier =
-                        !settings.requireModifier || modifierPressed(e, settings.modifierKey);
+                        !activeModifierSettings.requireModifier ||
+                        modifierPressed(e, activeModifierSettings.modifierKey);
 
                     // Only start pan when modifier is satisfied AND image is actually zoomed
-                    if (settings.requireModifier && !isModifier) return;
+                    if (activeModifierSettings.requireModifier && !isModifier) return;
                     if (bgWidth <= width && bgHeight <= height) return;
 
-                    suppressNextClick = true;
-                    suppressUntil = Date.now() + 600;
+                    // Keep suppression active for the whole drag; release in removeDrag.
+                    setSuppressionWindow(null);
 
                     e.preventDefault();
                     e.stopPropagation();
@@ -500,6 +687,10 @@ export default {
                     previousEvent = e;
                     document.addEventListener("mousemove", drag);
                     document.addEventListener("mouseup", removeDrag);
+                    document.addEventListener("pointerup", removeDrag);
+                    document.addEventListener("touchend", removeDrag);
+                    document.addEventListener("pointercancel", removeDrag);
+                    window.addEventListener("blur", removeDrag);
                 }
 
                 function load() {
@@ -525,6 +716,8 @@ export default {
                     img.addEventListener("wheel", onwheel, { passive: false });
                     img.addEventListener("mousedown", draggable);
                     img.addEventListener("click", swallowClickCapture, true);
+                    img.addEventListener("mouseup", swallowMouseUpCapture, true);
+                    img.addEventListener("pointerup", swallowPointerUpCapture, true);
                     img.addEventListener("dblclick", onDblClickCapture, true);
                 }
 
@@ -542,6 +735,8 @@ export default {
                     img.removeEventListener("mousedown", draggable);
                     img.removeEventListener("wheel", onwheel);
                     img.removeEventListener("click", swallowClickCapture, true);
+                    img.removeEventListener("mouseup", swallowMouseUpCapture, true);
+                    img.removeEventListener("pointerup", swallowPointerUpCapture, true);
                     img.removeEventListener("dblclick", onDblClickCapture, true);
 
                     img.style.backgroundImage = originalProperties.backgroundImage;
@@ -557,7 +752,18 @@ export default {
                     } catch {
                         // ignore dataset issues
                     }
+                    markInternalSrcChange(img);
                     img.src = restoreSrc;
+
+                    // ---- Extension tweak: restore original cursor ----
+                    try {
+                        if (img.dataset && img.dataset.wheelzoomOriginalCursor !== undefined) {
+                            img.style.cursor = img.dataset.wheelzoomOriginalCursor || "";
+                            delete img.dataset.wheelzoomOriginalCursor;
+                        }
+                    } catch {
+                        // ignore dataset issues
+                    }
                 }.bind(null, {
                     backgroundImage: img.style.backgroundImage,
                     backgroundRepeat: img.style.backgroundRepeat,
@@ -612,6 +818,10 @@ export default {
 
         function applyWheelzoomToEligibleImages() {
             const settings = getSettings(extensionAPI);
+            setLiveModifierSettings({
+                requireModifier: settings.requireModifier,
+                modifierKey: settings.modifierKey,
+            });
 
             const imgs = document.querySelectorAll("img");
             const options = {
@@ -678,6 +888,9 @@ export default {
                         }
                     } else if (m.type === "attributes") {
                         if (m.target && m.target.nodeName === "IMG" && m.attributeName === "src") {
+                            if (wasInternalSrcChange(m.target)) {
+                                continue;
+                            }
                             // src changed → wheelzoom needs a fresh init for this image
                             try {
                                 m.target.dispatchEvent(new Event("wheelzoom.destroy"));
